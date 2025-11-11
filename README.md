@@ -1,4 +1,6 @@
-# VLA Data Generation and Processing Pipeline
+# Milestone Report: Language-Conditioned Affordances for Grasping in a Cluttered Environment
+
+# Data Generation and Processing Pipeline
 
 This document provides the instructions to run the full data pipeline, from initial data generation to final processing into a TFDS dataset in RLDS format (compatible with most VLA backbones like OpenVLA/Octo, etc). Assuming Robosuite 1.5.1 with all the required dependencies install to run it. 
 
