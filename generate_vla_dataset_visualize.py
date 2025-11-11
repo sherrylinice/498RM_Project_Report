@@ -1,4 +1,52 @@
-#!/usr/binbin/env python3
+"""
+Author: Sherry Li
+
+VLA Dataset Generation Script for Robosuite
+
+This script automates the generation of a dataset for VLA (Visual Language 
+Action) models using the Robosuite simulation environment.
+
+It uses a custom-made 'PickPlaceClutter' environment to simulate a pick-and-place
+task (e.g., "Place the cereal box in the target bin").
+
+Core Functionality:
+1.  **Environment Setup**: Initializes a Robosuite environment in headless mode
+    (offscreen rendering) with a Panda robot and a 256x256 'agentview' camera
+    that provides both RGB and depth data.
+2.  **Task Execution**: For a specified number of trials, the script:
+    a.  Resets the environment, which randomizes the poses of objects.
+    b.  Captures the *initial* state: RGB image, depth image, camera intrinsics (K),
+        and camera extrinsics (T_wc).
+    c.  Dynamically calculates 7-DOF affordance waypoints (pre-grasp, grasp, 
+        release, home) based on the ground-truth poses of the target object
+        (e.g., "Cereal") and the receptacle. This includes dynamically 
+        calculating the grasp orientation to be perpendicular to the object's
+        cluttered or out of gripper range side, e.g, the long side of a cereal box.
+    d.  Generates a natural language instruction (e.g., "Pick up the cereal box.").
+    e.  Executes a multi-step trajectory using a motion controller 
+        to simulate the pick-and-place task.
+    f.  Checks for task success using ground-truth positions (i.e., is the
+        cereal box inside the correct bin?).
+3.  **Data Saving**: If (and only if) the trajectory is successful, the script
+    saves a single data sample to an 'episode_...' directory. This sample
+    contains:
+    -   `image_rgb.png`: The initial RGB image.
+    -   `image_depth.npy`: The initial depth image (in meters).
+    -   `metadata.json`: A file containing the language instruction, the 7-DOF
+        affordance waypoints, camera intrinsics, and camera extrinsics.
+4.  **Debugging**: The script can optionally save debug videos (MP4) for the 
+    first N trials to visually inspect the robot's behavior.
+
+Example Usage:
+    # Set for headless rendering
+    export MUJOCO_GL=egl 
+    
+    # Run the generation script
+    python generate_vla_dataset_visualize.py \
+        --output_dir ./my_data \
+        --num_trials 20 \
+        --num_videos 2
+"""
 
 import robosuite as suite
 import numpy as np
@@ -15,7 +63,7 @@ from scipy.spatial.transform import Slerp
 # --- 1. IMPORT camera_utils ---
 from robosuite.utils import camera_utils
 
-# --- Import your new environment to register it ---
+# --- Import new environment to register it ---
 try:
     import robosuite.environments.manipulation.pick_place_clutter
 except ImportError:
@@ -31,7 +79,7 @@ class VLADataGenerator:
 
     def __init__(self, output_dir):
         
-        # 1. Load Controller Config (Unchanged)
+        # 1. Load Controller Config
         controller_name = "basic_abs_pose.json"
         controller_path = os.path.join(os.path.dirname(__file__), 'controllers', controller_name)
         
@@ -46,14 +94,14 @@ class VLADataGenerator:
         print(f"Loading controller config from: {controller_path}")
         controller_config = suite.load_composite_controller_config(controller=controller_path)
 
-        # 2. Create argument configuration (Unchanged)
+        # 2. Create argument configuration
         self.config = {
             "env_name": "PickPlaceClutter",
             "robots": "Panda",
             "controller_configs": controller_config,
         }
         
-        # 3. Create environment (MODIFIED)
+        # 3. Create environment
         print("Creating 'PickPlaceClutter' environment...")
         self.env = suite.make(
             **self.config,
@@ -62,36 +110,30 @@ class VLADataGenerator:
             ignore_done=True,
             use_camera_obs=True,
             camera_names="agentview",
-            # --- 2. CHANGED TO 256x256 ---
             camera_heights=256,
             camera_widths=256,
-            camera_depths=True, # (Unchanged)
+            camera_depths=True,
             control_freq=20,
         )
         
-        # 4. Set up output directory (Unchanged)
+        # 4. Set up output directory
         self.output_dir = os.path.expanduser(output_dir)
         os.makedirs(self.output_dir, exist_ok=True)
         print(f"Saving dataset to: {self.output_dir}")
 
-        # 5. Reset and get initial robot pose (Unchanged)
+        # 5. Reset and get initial robot pose
         self.obs = self.env.reset()
         self.robot_pos = self.obs["robot0_eef_pos"].copy()
         self.robot_quat = self._get_current_quat()
         self.robot_rotvec = R.from_quat(self.robot_quat).as_rotvec(degrees=False)
         self._rec = {} # For video saving
 
-        # 6. Camera parameters (MODIFIED)
-        # --- 2. UPDATED TO 256x256 ---
+        # 6. Camera parameters
         self.cam_width = self.env.camera_widths[0]
         self.cam_height = self.env.camera_heights[0]
 
     def _get_current_quat(self):
-#        """Helper to consistently get the correct quaternion from observations."""
-#        if "robot0_eef_quat_site" in self.obs:
-#            return self.obs["robot0_eef_quat_site"].copy()
-#        else:
-#            return self.obs["robot0_eef_quat"].copy()
+        """Helper to consistently get the correct quaternion from observations."""
 
         return self.obs["robot0_eef_quat_site"].copy()  # SciPy-friendly [x,y,z,w]
 
@@ -107,7 +149,7 @@ class VLADataGenerator:
         return np.abs(np.rad2deg(diff_rad))
 
     #================================================================
-    # Robot Movement Helpers (Unchanged)
+    # Robot Movement Helpers
     #================================================================
     
     def move_to_pose(self, target_pos, target_quat, gripper, count, time_for_residual_movement=10):
@@ -123,7 +165,7 @@ class VLADataGenerator:
             next_target_quat = slerp(float(i)/count).as_quat()
             action = np.concatenate([next_target_pos, R.from_quat(next_target_quat).as_rotvec(degrees=False), [gripper]])
             self.obs, _, _, _ = self.env.step(action)
-            self._video_frame("Moving to pose (smooth)")
+            self._video_frame("Moving to pose")
             
         for i in range (time_for_residual_movement):
             action = np.concatenate([target_pos, R.from_quat(target_quat).as_rotvec(degrees=False), [gripper]])
@@ -147,7 +189,7 @@ class VLADataGenerator:
         self.robot_rotvec = R.from_quat(self.robot_quat).as_rotvec(degrees=False)
 
     #=====================================================================
-    # Video Saving Helpers (Unchanged)
+    # Video Saving Helpers
     #=====================================================================
     def _video_frame(self, text=None):
         """Records a single video frame."""
@@ -155,7 +197,7 @@ class VLADataGenerator:
             return
         H, W, cam = self._rec["H"], self._rec["W"], self._rec["camera"]
         rgb = self.env.sim.render(camera_name=cam, height=H, width=W, depth=False)
-        frame = cv2.flip(rgb, 0) # <-- 3. FLIP is here for video
+        frame = cv2.flip(rgb, 0)
         if frame.dtype != np.uint8:
             frame = np.clip(frame, 0, 255).astype(np.uint8)
         frame = np.ascontiguousarray(frame)
@@ -169,7 +211,7 @@ class VLADataGenerator:
     def _video_start(self, path="cereal_seed_generation.mp4", fps=30, H=256, W=256, camera_name="agentview"):
         """Initializes the video recorder."""
         print(f"\n[VIDEO] Starting video recording, saving to: {path}")
-        # --- 2. UPDATED TO 256x256 ---
+        
         self._rec = {"on": False, "path": path, "fps": fps, "H": H, "W": W, "camera": camera_name, "frames": 0}
         for fourcc_str in ("mp4v", "avc1", "XVID"):
             fourcc = cv2.VideoWriter_fourcc(*fourcc_str)
@@ -193,7 +235,7 @@ class VLADataGenerator:
             self._rec["on"] = False
 
     #================================================================
-    # NEW: Data Generation Functions (Unchanged, but cam_width/height are now 256)
+    # Data Generation Functions
     #================================================================
 
     def _get_7dof_pose(self, pos, quat, gripper_state):
@@ -203,7 +245,7 @@ class VLADataGenerator:
         """
         # Scipy rotation: R.from_quat() expects [x, y, z, w]
         # robosuite/self.obs provides [w, x, y, z]... but our grasp_quat is from Scipy,
-        # so it's already in [x, y, z, w] format. We're good.
+        # so it's already in [x, y, z, w] format.
         rpy = R.from_quat(quat).as_euler('xyz', degrees=False) # 'xyz' = roll, pitch, yaw
         return [
             pos[0], pos[1], pos[2],
@@ -232,10 +274,9 @@ class VLADataGenerator:
         episode_dir = os.path.join(self.output_dir, f"episode_{trial_idx:05d}")
         os.makedirs(episode_dir, exist_ok=True)
         
-        # --- 2. Save Images (The Missing Part) ---
+        # --- 2. Save Images  ---
         
         # Save RGB image
-        # Note: cv2 saves in BGR, so we must convert from RGB
         rgb_bgr = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2BGR)
         cv2.imwrite(os.path.join(episode_dir, "image_rgb.png"), rgb_bgr)
         
@@ -243,14 +284,14 @@ class VLADataGenerator:
         # .npy is perfect for saving a numpy array
         np.save(os.path.join(episode_dir, "image_depth.npy"), depth_img)
 
-        # --- 3. Save Metadata (Your existing code) ---
+        # --- 3. Save Metadata ---
         metadata = {
             "instruction": instruction,
             "waypoints": waypoint_labels,  # This now holds A1, A2, A3, A4
-            # --- NEW: Save camera parameters ---
+            # --- Only for visualize affordances: Save camera parameters ---
             "camera_intrinsics": K.tolist(),
             "camera_extrinsics_wc": T_wc.tolist()
-            # --- END OF ADDITION ---
+            # --- END  ---
         }
         
         with open(os.path.join(episode_dir, "metadata.json"), "w") as f:
@@ -284,14 +325,13 @@ class VLADataGenerator:
                 bin_x_low -= bin_size[0] / 2.0
             if target_bin_id < 2:
                 bin_y_low -= bin_size[1] / 2.0
-            # --- End of copied logic ---
 
             bin_x_high = bin_x_low + bin_size[0] / 2.0
             bin_y_high = bin_y_low + bin_size[1] / 2.0
             
             in_x = (bin_x_low < final_obj_pos[0] < bin_x_high)
             in_y = (bin_y_low < final_obj_pos[1] < bin_y_high)
-            # Z check is slightly different
+            # Z check
             in_z = (bin2_pos[2] < final_obj_pos[2] < bin2_pos[2] + 0.1)
 
             is_success = in_x and in_y and in_z
@@ -307,16 +347,15 @@ class VLADataGenerator:
             return False
 
     #================================================================
-    # REFACTORED: Main Trajectory and Generation Loop
+    # Main Trajectory and Generation Loop
     #================================================================
 
     def execute_trajectory(self, trajectory_goals_3d):
         """
-        Runs the hard-coded trajectory.
+        Runs the Slerp trajectory.
         Returns True on success, False on failure.
         """
         try:
-            # 1. Get poses from the labels
             # 1. Get poses from the labels
             hover_pos_cereal = np.array(trajectory_goals_3d["A1_pregrasp"][0])
             grasp_pos_cereal = np.array(trajectory_goals_3d["A2_grasp"][0])
@@ -325,10 +364,9 @@ class VLADataGenerator:
             # --- Get BOTH quaternions ---
             grasp_quat = np.array(trajectory_goals_3d["A1_pregrasp"][1])
             place_quat = np.array(trajectory_goals_3d["A3_release"][1])
-            # --- END MODIFICATION ---
             
             # 2. Get the "hover_pos_bin"
-            target_bin_pos = self.env.target_bin_placements[2]
+            target_bin_pos = self.env.target_bin_placements[2] #2 for cereal
             # --- Use the same hover height as the pre-grasp ---
             hover_height = hover_pos_cereal[2] - grasp_pos_cereal[2]
             hover_pos_bin = target_bin_pos + np.array([0, 0, hover_height]) # e.g., 0.35
@@ -337,7 +375,7 @@ class VLADataGenerator:
             neutral_pos = self.robot_pos.copy()
             neutral_quat = self.robot_quat.copy()
 
-            # --- NEW 3-STEP GRASP TRAJECTORY ---
+            # --- 3-STEP GRASP TRAJECTORY ---
             
             # Open gripper at home
             self.move_gripper(-1, count=20)
@@ -353,8 +391,6 @@ class VLADataGenerator:
             # Step 3: Descend to Grasp POSITION
             print("  Descending to grasp...")
             self.move_to_pose(grasp_pos_cereal, grasp_quat, gripper=-1.0, count=50)
-
-            # --- (Rest of trajectory is the same) ---
             
             print("  Closing gripper...")
             self.move_gripper(1, count=20)
@@ -362,10 +398,9 @@ class VLADataGenerator:
             print("  Lifting object...")
             self.move_to_pose(hover_pos_cereal, grasp_quat, gripper=1.0, count=50)
 
-            # --- NEW: ROTATE IN AIR TO STANDARD ORIENTATION ---
+            # --- ROTATE IN AIR TO STANDARD ORIENTATION ---
             print("  Rotating to standard place orientation...")
             self.move_to_pose(hover_pos_cereal, place_quat, gripper=1.0, count=40)
-            # --- END OF ADDITION ---
 
             print("  Moving to bin...")
             self.move_to_pose(hover_pos_bin, place_quat, gripper=1.0, count=70)
@@ -384,6 +419,7 @@ class VLADataGenerator:
             
             # Call the check *after* the trajectory is done
             return self.check_success(target_obj_name="Cereal")
+            
         except Exception as e:
             print(f"An error occurred during trajectory execution: {e}")
             # Add a frame with the error text
@@ -401,13 +437,11 @@ class VLADataGenerator:
         for i in range(num_trials):
             print(f"\n--- Trial {i+1} / {num_trials} ---")
             
-            # --- ADD THIS BLOCK TO START VIDEO ---
             save_video_this_trial = (i < num_videos)
             if save_video_this_trial:
                 # Save video to the root output dir, named by trial number
-                video_path = os.path.join(self.output_dir, f"debug_video_trial_{i:05d}.mp4")
+                video_path = os.path.join(self.output_dir, f"video_trial_{i:05d}.mp4")
                 self._video_start(path=video_path)
-            # --- END OF ADDITION ---
             
             # Reset env and robot state
             self.obs = self.env.reset()
@@ -420,8 +454,7 @@ class VLADataGenerator:
             neutral_pos = self.robot_pos.copy()
             neutral_quat = self.robot_quat.copy()
 
-            # --- ADD THIS BLOCK ---
-            # Get Camera Intrinsics and Extrinsics
+            # Get Camera Intrinsics and Extrinsics, ONLY FOR VISUALIZATION
             cam_name = "agentview"
             K = camera_utils.get_camera_intrinsic_matrix(
                 self.env.sim, cam_name, self.cam_height, self.cam_width
@@ -429,13 +462,8 @@ class VLADataGenerator:
             T_wc = camera_utils.get_camera_extrinsic_matrix(
                 self.env.sim, cam_name
             )
-            # --- END OF ADDITION ---
             
-            # --- 3. MODIFIED IMAGE CAPTURE ---
-            # 1. Get initial images (AT THE START)
-            rgb_image_raw = self.obs["agentview_image"]
-            
-            # --- 3. MODIFIED IMAGE CAPTURE ---
+            # --- IMAGE CAPTURE ---
             # 1. Get initial images (AT THE START)
             rgb_image_raw = self.obs["agentview_image"]
             depth_image_raw = self.obs["agentview_depth"]
@@ -449,13 +477,12 @@ class VLADataGenerator:
             depth_real = camera_utils.get_real_depth_map(self.env.sim, depth_image_raw)
             # Flip vertically to match RGB
             depth_image = cv2.flip(depth_real, 0)
-            # --- END OF MODIFICATIONS ---
             
-        # 4. Get 3D poses and instruction
+            # 4. Get 3D poses and instruction
             try:
                 cereal_body_id = self.env.obj_body_id["Cereal"]
                 cereal_pos = self.env.sim.data.body_xpos[cereal_body_id]
-                cereal_mj_quat = self.env.sim.data.body_xquat[cereal_body_id] # <-- ADD THIS
+                cereal_mj_quat = self.env.sim.data.body_xquat[cereal_body_id]
 
                 target_bin_pos = self.env.target_bin_placements[2]
                 target_obj_name = "cereal box"
@@ -467,11 +494,8 @@ class VLADataGenerator:
             instruction = self.generate_instruction(target_obj_name, receptacle_name)
             print(f"Generated Instruction: {instruction}")
             
-            # 5. Calculate 3D and 2D Labels
-            
             # 5. Calculate 7-DOF Waypoint Labels
-            # --- NEW DYNAMIC GRASP LOGIC (MODIFIED as per ground-truth side vector) ---
-            print("  Analyzing object orientation using ground-truth rotation matrix...")
+            print("  Analyzing object orientation ...")
             
             # 1. Convert MuJoCo quat [w, x, y, z] to SciPy quat [x, y, z, w]
             cereal_scipy_quat = np.array([
@@ -494,7 +518,7 @@ class VLADataGenerator:
             # 5. Normalize the vector
             norm = np.linalg.norm(x_axis_gripper)
             if norm < 1e-5:
-                # Failsafe: happens if the box's long side is pointing straight up/down
+                # happens if the box's long side is pointing straight up/down
                 print("  Warning: Box long side is Z-aligned. Defaulting to world X-axis grasp.")
                 x_axis_gripper = np.array([1., 0., 0.])
             else:
@@ -512,33 +536,10 @@ class VLADataGenerator:
             grasp_rot = R.from_matrix(grasp_rotation_matrix)
             grasp_quat = grasp_rot.as_quat()
 
-            # 9. Define the standard "placing" orientation (unchanged)
+            # 9. Define the standard "placing" orientation
             standard_place_rot = R.from_euler('xyz', [180, 0, 90], degrees=True)
             standard_place_quat = standard_place_rot.as_quat()
-            # --- END OF MODIFIED LOGIC ---
-
-            # --- NEW DYNAMIC GRASP LOGIC ---
-#            print("  Analyzing object orientation...")
-#            cereal_scipy_quat = np.array([
-#                cereal_mj_quat[1], cereal_mj_quat[2], cereal_mj_quat[3], cereal_mj_quat[0]
-#            ])
-#            cereal_yaw_deg = R.from_quat(cereal_scipy_quat).as_euler('xyz')[2]
-#            print(f"  Detected cereal yaw (long side): {cereal_yaw_deg:.2f} degrees.")
-#
-#            # Define the grasp yaw: just add 90 degrees to the box's long-side yaw
-#            gripper_yaw_deg = cereal_yaw_deg + 90.0
-#            print(f"  Calculating grasp yaw (long side + 90): {gripper_yaw_deg:.2f}")
-#            
-#            # Create the new grasp rotation
-#            grasp_rot = R.from_euler('xyz', [180, 0, gripper_yaw_deg], degrees=True)
-#            grasp_quat = grasp_rot.as_quat()
-#            
-#            standard_place_rot = R.from_euler('xyz', [180, 0, 90], degrees=True)
-#            standard_place_quat = standard_place_rot.as_quat()
-#            # --- END OF NEW LOGIC ---
-#            grasp_rot = R.from_euler('xyz', [180, 0, 90], degrees=True)
-#            grasp_quat = grasp_rot.as_quat()
-
+            
             # A1: Pre-Grasp
             a1_pos = cereal_pos + np.array([0, 0, 0.30])
             # A2: Grasp
@@ -548,22 +549,17 @@ class VLADataGenerator:
             a4_pos = neutral_pos # Use the "home" pos we just saved
             
             # Use helper to create 7-DOF poses
-            # Use helper to create 7-DOF poses
             waypoint_labels = {
                 "A1_pregrasp": self._get_7dof_pose(a1_pos, grasp_quat, -1.0), # Gripper Open
                 "A2_grasp":    self._get_7dof_pose(a2_pos, grasp_quat,  1.0), # Gripper Closed
-                # --- MODIFY THIS LINE ---
                 "A3_release":  self._get_7dof_pose(a3_pos, standard_place_quat, -1.0), # Gripper Open
-                # --- END MODIFICATION ---
                 "A4_home":     self._get_7dof_pose(a4_pos, neutral_quat, -1.0)  # Gripper Open
             }
             
             trajectory_goals_3d = {
                  "A1_pregrasp": (a1_pos.tolist(), grasp_quat.tolist()),
                  "A2_grasp": (a2_pos.tolist(), grasp_quat.tolist()),
-                 # --- MODIFY THIS LINE ---
                  "A3_release": (a3_pos.tolist(), standard_place_quat.tolist()),
-                 # --- END MODIFICATION ---
             }
             is_success = self.execute_trajectory(trajectory_goals_3d)
             
@@ -572,27 +568,24 @@ class VLADataGenerator:
                 success_count += 1
                 print(f"Trial {i+1} SUCCESSFUL. Saving sample.")
                 # --- Pass processed images to save_sample ---
-                #self.save_sample(i, rgb_image, depth_image, instruction, waypoint_labels)
                 self.save_sample(
                     trial_idx=i,
                     rgb_img=rgb_image,
                     depth_img=depth_image,
                     instruction=instruction,
                     waypoint_labels=waypoint_labels,
-                    K=K,           # <-- ADD THIS
-                    T_wc=T_wc      # <-- ADD THIS
+                    K=K,           # <-- ADD THIS only for visualization
+                    T_wc=T_wc      # <-- ADD THIS only for visualization
                 )
             else:
                 print(f"Trial {i+1} FAILED. Discarding sample.")
                 
-            # --- ADD THIS BLOCK TO STOP VIDEO ---
             if save_video_this_trial:
                 if is_success:
                     self._video_frame("TRIAL SUCCESSFUL")
                 else:
                     self._video_frame("TRIAL FAILED")
                 self._video_stop()
-            # --- END OF ADDITION ---
                 
         print(f"\nGeneration complete. {success_count} / {num_trials} successful samples saved.")
         self.env.close()
@@ -605,29 +598,26 @@ if __name__ == "__main__":
     else:
         print(f"MUJOCO_GL is already set to: {os.environ.get('MUJOCO_GL')}")
         
-    # --- NEW: Argparse ---
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="~/my_openvla_dataset",
+        default="~/my_data",
         help="Directory to save the dataset"
     )
     parser.add_argument(
         "--num_trials",
         type=int,
-        default=100,
+        default=20,
         help="Number of samples to generate"
     )
     
-    # --- ADD THIS ARGUMENT ---
     parser.add_argument(
         "--num_videos",
         type=int,
-        default=5,
+        default=2,
         help="Number of initial videos to save for debugging (e.g., 5). Set to 0 to disable."
     )
-    # --- END OF ADDITION ---
     
     args = parser.parse_args()
         

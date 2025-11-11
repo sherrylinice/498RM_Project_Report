@@ -1,3 +1,49 @@
+"""
+Author: Sherry Li
+
+Robosuite Seed Demonstration Generator (PickPlaceClutter)
+
+This script is designed to generate a single, high-quality "seed" demonstration
+for the custom-made 'PickPlaceClutter' environment in Robosuite.
+
+Its primary purpose is to create a single 'demo.hdf5' file that can be used
+as a basis for imitation learning (e.g., with MimicGen).
+
+Core Functionality:
+1.  **Environment Setup**: Initializes the 'PickPlaceClutter' environment
+    in headless mode with a Panda robot and an absolute pose controller
+    (from 'basic_abs_pose.json').
+2.  **Data Wrapper**: Wraps the environment with `DataCollectionWrapper` to
+    automatically record all states and actions to a temporary directory
+    as `.npz` files.
+3.  **Dynamic Grasping**:
+    -   Finds the 'Cereal' object in the scene.
+    -   Analyzes the object's yaw (its "long side").
+    -   Calculates the two valid gripper orientations to grasp the object's
+        "short side" (yaw + 90 deg and yaw - 90 deg).
+    -   Compares these two angles to the robot's neutral orientation and
+        selects the one that requires the *shortest* rotation, making the
+        motion more efficient.
+4.  **Execute Trajectory**:
+    -   Executes a multi-step pick-and-place trajectory using
+        Slerp (Spherical Linear Interpolation) for clean rotations.
+    -   The trajectory includes: move-to-pre-grasp, descend-to-grasp,
+        close-gripper, lift, move-to-bin, release, and return-home.
+    -   Saves a debug video (`.mp4`) of the entire execution.
+5.  **Data Packaging in HDF5 Format for Mimicgen**:
+    -   If the trajectory completes without error, it manually injects a
+        `successful = True` flag into the saved `.npz` demonstration data.
+    -   It then calls the `gather_demonstrations_as_hdf5` helper function
+        to find all successful demos in the temp directory and package
+        them into a single `demo.hdf5` file (saving the 'states' and
+        'actions' datasets).
+    -   The final file is saved to '~/mimicgen_datasets/cereal_clutter/'.
+
+Example Usage (requires 'egl' for headless rendering):
+    export MUJOCO_GL=egl
+    python generate_seed_demo_1.5.py
+"""
+
 import robosuite as suite
 import numpy as np
 import h5py
@@ -8,9 +54,9 @@ import cv2
 import datetime
 from glob import glob
 from scipy.spatial.transform import Rotation as R
-from scipy.spatial.transform import Slerp  # <-- We are now using Slerp!
+from scipy.spatial.transform import Slerp
 
-# --- Import your new environment to register it ---
+# --- Import new environment to register it ---
 try:
     import robosuite.environments.manipulation.pick_place_clutter
 except ImportError:
@@ -24,9 +70,8 @@ except ImportError:
 # --- Import Wrappers ---
 from robosuite.wrappers import DataCollectionWrapper
 
-#
-# --- This function is copied from collect_human_demonstrations.py ---
-#
+# --- This function is copied from robosuite's collect_human_demonstrations.py ---
+
 def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
     """
     Gathers the demonstrations saved in @directory into a
@@ -97,8 +142,6 @@ def gather_demonstrations_as_hdf5(directory, out_dir, env_info):
     grp.attrs["env"] = env_name
     grp.attrs["env_info"] = env_info
     f.close()
-# --- END OF COPIED FUNCTION ---
-
 
 class CerealSeedGenerator:
 
@@ -159,7 +202,6 @@ class CerealSeedGenerator:
         else:
             return self.obs["robot0_eef_quat"].copy()
 
-    # --- NEW HELPER FUNCTION ---
     def _get_shortest_angle_diff(self, a_deg, b_deg):
         """
         Calculates the absolute shortest angle difference between two angles.
@@ -169,7 +211,7 @@ class CerealSeedGenerator:
         b_rad = np.deg2rad(b_deg)
         diff_rad = np.arctan2(np.sin(a_rad - b_rad), np.cos(a_rad - b_rad))
         return np.abs(np.rad2deg(diff_rad))
-    # --- END OF NEW HELPER ---
+
     #================================================================
     # Robot Movement Helpers
     #================================================================
@@ -189,10 +231,8 @@ class CerealSeedGenerator:
             next_target_pos = (target_pos - self.robot_pos) * i/count + self.robot_pos
             next_target_quat = slerp(float(i)/count).as_quat()
             
-            # --- MODIFIED ACTION ---
-            # Use the provided gripper state instead of hard-coding [0]
+            # Use the provided gripper state
             action = np.concatenate([next_target_pos, R.from_quat(next_target_quat).as_rotvec(degrees=False), [gripper]])
-            # --- END MODIFICATION ---
             
             self.obs, _, _, _ = self.env.step(action)
             self._video_frame("Moving to pose (smooth)")
@@ -224,7 +264,7 @@ class CerealSeedGenerator:
         self.robot_rotvec = R.from_quat(self.robot_quat).as_rotvec(degrees=False)
 
     #=====================================================================
-    # Video Saving Helpers (Unchanged)
+    # Video Saving Helpers
     #=====================================================================
     def _video_frame(self, text=None):
         """Records a single video frame."""
@@ -240,9 +280,7 @@ class CerealSeedGenerator:
             cv2.putText(frame, text, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 3, cv2.LINE_AA)
             cv2.putText(frame, text, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
             
-        # --- FIX FOR THE CV2 TYPO ---
         bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        # --- END OF FIX ---
         
         self._rec["frames"] += 1
         self._rec["writer"].write(bgr)
@@ -288,7 +326,6 @@ class CerealSeedGenerator:
             cereal_pos = self.env.sim.data.body_xpos[cereal_body_id]
             target_bin_pos = self.env.target_bin_placements[2]
             
-            # --- UPDATED GRASPING STRATEGY ---
             print("  Analyzing object orientation...")
             
             cereal_mj_quat = self.env.sim.data.body_xquat[cereal_body_id]
@@ -299,7 +336,7 @@ class CerealSeedGenerator:
             
             print(f"  Detected cereal yaw (long side): {cereal_yaw_deg:.2f} degrees.")
             
-            # --- NEW: Find the most efficient 90-degree offset ---
+            # --- Find the most efficient 90-degree offset ---
             # Define the two valid yaw targets for grasping the short side
             grasp_yaw_1 = cereal_yaw_deg + 90.0
             grasp_yaw_2 = cereal_yaw_deg - 90.0
@@ -317,7 +354,6 @@ class CerealSeedGenerator:
             else:
                 gripper_yaw_deg = grasp_yaw_2
                 print(f"  Choosing -90 offset. Gripper yaw: {gripper_yaw_deg:.2f} (diff {diff2:.1f} deg)")
-            # --- END OF NEW LOGIC ---
 
             # Create the new grasp rotation
             grasp_rot = R.from_euler('xyz', [180, 0, gripper_yaw_deg], degrees=True)
@@ -332,12 +368,10 @@ class CerealSeedGenerator:
 
         neutral_pos = self.robot_pos.copy()
         
-        # --- UPDATED: Increased lift height to 35cm ---
-        hover_pos_cereal = cereal_pos + np.array([0, 0, 0.35]) # Was 0.30
+        hover_pos_cereal = cereal_pos + np.array([0, 0, 0.35])
         grasp_pos_cereal = cereal_pos + np.array([0, 0, 0.03])
-        hover_pos_bin = target_bin_pos + np.array([0, 0, 0.35]) # Was 0.30
+        hover_pos_bin = target_bin_pos + np.array([0, 0, 0.35])
         place_pos_bin = target_bin_pos + np.array([0, 0, 0.10])
-        # --- END OF UPDATE ---
         
         try:
             self.move_gripper(-1, count=20)

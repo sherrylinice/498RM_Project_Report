@@ -1,4 +1,36 @@
-#!/usr/bin/env python3
+"""
+Author: Sherry Li
+
+VLA Dataset Visualization Tool
+
+This script provides a command-line utility to visualize samples from a generated
+dataset for VLA (OpenVLA) Fine-tuning.
+
+It iterates through a specified number of "episode_*" directories within the
+dataset path. For each episode, it performs the following:
+
+1.  Loads the `image_rgb.png`.
+2.  Loads the `metadata.json` file to retrieve the natural language instruction,
+    camera parameters (intrinsics `K` and extrinsics `T_wc`), and the
+    7-DOF affordance waypoints (A1_pregrasp, A2_grasp, A3_release).
+3.  For each 7-DOF affordance waypoint (which includes x, y, z, roll, pitch, yaw,
+    and gripper state), it calculates the 3D world coordinates for a
+    camera coordinate frame (origin + X, Y, Z axes).
+4.  It projects these 3D points into 2D pixel coordinates using the
+    `project_world_to_pixel` function.
+5.  It draws the projected 3D axes (as colored lines: R-G-B for X-Y-Z) and the
+    language instruction directly onto the RGB image.
+6.  The resulting annotated image is saved to a specified output directory,
+    allowing for quick visual verification of the dataset's quality,
+    camera parameters, and affordance pose accuracy.
+
+Example usage:
+    python visualize_dataset_and_affordances.py \
+        --dataset_dir ./my_data \
+        --output_dir ./my_data_VISUAL \
+        --num_samples 5
+
+"""
 
 import os
 import json
@@ -6,7 +38,7 @@ import cv2
 import numpy as np
 import argparse
 from glob import glob
-from scipy.spatial.transform import Rotation as R # <-- ADD THIS IMPORT
+from scipy.spatial.transform import Rotation as R
 
 def print_directory_structure(root_dir, num_episodes=3):
     """Prints a simple tree view of the dataset directory."""
@@ -31,12 +63,12 @@ def print_directory_structure(root_dir, num_episodes=3):
                 print(f"  │   └── {file_name}")
             else:
                 print(f"  │   ├── {file_name}")
+                
     print("-" * 40) # Separator
 
 def project_world_to_pixel(P_world, T_wc, K, W, H):
     """
     Projects a 3D world point into 2D pixel coordinates.
-    (FIXED: Removed the incorrect double-flip)
     """
     
     # 1. Explicitly check for invalid input
@@ -79,21 +111,17 @@ def project_world_to_pixel(P_world, T_wc, K, W, H):
     u = P_image_h[0] / P_image_h[2]
     v = P_image_h[1] / P_image_h[2]
     
-    # --- 9. FLIP LOGIC REMOVED ---
-    # The image is already flipped, and the projection (K @ P_cam)
-    # also assumes a top-left origin. No flip is needed.
-    
-    # 10. Check if pixel is within image bounds
-    if not (0 <= u < W and 0 <= v < H): # <-- MODIFIED
+    # 9. Check if pixel is within image bounds
+    if not (0 <= u < W and 0 <= v < H):
         return None
         
-    return int(round(u)), int(round(v)) # <-- MODIFIED
+    return int(round(u)), int(round(v))
 
 
 def visualize_dataset(dataset_dir, output_dir, num_samples=5):
     """
     Loads and visualizes the first N samples from a VLA dataset directory.
-    (MODIFIED: Draws 3D coordinate frames for affordances)
+    Draws 3D coordinate frames for affordances
     """
     
     # --- Call the directory structure printer ---
@@ -162,12 +190,12 @@ def visualize_dataset(dataset_dir, output_dir, num_samples=5):
 
         print(f"\n  SAVED 7-DOF WAYPOINTS (x, y, z, roll, pitch, yaw, gripper):")
         
-        # --- 8. (MODIFIED) Project, Draw 3D Axes, and Print Waypoints ---
+        # --- 8. Project, Draw 3D Axes, and Print Waypoints ---
         for name, pose in waypoints.items():
             pose_str = [f"{p: .3f}" for p in pose]
             print(f"  - {name+':':<12} [{', '.join(pose_str)}]")
             
-            # We only draw A1, A2, A3
+            # only draw A1, A2, A3
             if name in ["A1_pregrasp", "A2_grasp", "A3_release"]:
                 
                 # Get pose components

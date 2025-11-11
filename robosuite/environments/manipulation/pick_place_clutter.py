@@ -1,3 +1,28 @@
+"""
+
+Author: Sherry Li
+
+Robosuite Environment: PickPlaceClutter
+
+This script defines a custom Robosuite environment named `PickPlaceClutter`.
+It inherits from `ManipulationEnv` and is based on the standard `PickPlace`
+task, but with significant modifications to increase task complexity.
+
+Core Modifications:
+1.  **Clutter Objects**: This environment adds a list of "clutter" objects
+    (e.g., Bottle, Lemon, Milk Carton, Cereal Box, Can, Bread) to the bin.
+2.  **Clutter Placement**: It modifies the placement sampler to randomly
+    place both the target objects and the clutter objects within the
+    same bin area, forcing the robot to handle a more complex scene.
+3.  **Modified Visualization**: The visualization logic is updated to
+    also consider distances to clutter objects, not just target objects.
+
+This environment is designed to be imported and used by data generation
+scripts (like `generate_vla_dataset.py` or `generate_seed_demo_1.5.py`)
+to create a more challenging and realistic dataset for training
+robot policies.
+"""
+
 import random
 from collections import OrderedDict
 
@@ -17,14 +42,13 @@ from robosuite.models.objects import (
     MilkVisualObject,
 )
 
-# --- MODIFIED IMPORT BLOCK ---
 from robosuite.models.objects import (
     BottleObject,
     LemonObject,
     SquareNutObject,
     RoundNutObject,
 )
-# --- END OF MODIFIED BLOCK ---
+
 
 from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.observables import Observable, sensor

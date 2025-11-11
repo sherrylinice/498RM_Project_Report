@@ -1,4 +1,54 @@
-#!/usr/binbin/env python3
+"""
+Author: Sherry Li
+
+VLA Dataset Generation Script for Robosuite
+
+This script automates the generation of a dataset for VLA (Visual Language 
+Action) models using the Robosuite simulation environment.
+
+It uses a custom 'PickPlaceClutter' environment to simulate a pick-and-place
+task (e.g., "Place the cereal box in the target bin").
+
+Core Functionality:
+1.  **Environment Setup**: Initializes a Robosuite environment in headless mode
+    (offscreen rendering) with a Panda robot and a 256x256 'agentview' camera
+    that provides both RGB and depth data.
+2.  **Task Execution**: For a specified number of trials, the script:
+    a.  Resets the environment, which randomizes the poses of objects.
+    b.  Captures the *initial* state: RGB image and depth image.
+    c.  Dynamically calculates 7-DOF affordance waypoints (pre-grasp, grasp, 
+        release, home) based on the ground-truth poses of the target object
+        (e.g., "Cereal") and the receptacle. This includes dynamically 
+        calculating the grasp orientation to be perpendicular to the object's cluttered 
+        or gripper not achievable side, for example, the cereal box' long side.
+    d.  Generates a natural language instruction (e.g., "Pick up the cereal box.").
+    e.  Executes a multi-step trajectory using a motion controller 
+        to simulate the pick-and-place task.
+    f.  Checks for task success using ground-truth positions (i.e., is the
+        cereal box inside the correct bin?).
+3.  **Data Saving**: If (and only if) the trajectory is successful, the script
+    saves a single data sample to an 'episode_...' directory. This sample
+    contains:
+    -   `image_rgb.png`: The initial RGB image.
+    -   `image_depth.npy`: The initial depth image (in meters).
+    -   `metadata.json`: A file containing the language instruction and the 7-DOF
+        affordance waypoints.
+4.  **Debugging**: The script can optionally save debug videos (MP4) for the 
+    first N trials to visually inspect the robot's behavior.
+5.  **Resuming**: A `start_index` argument allows for resuming data generation
+    or organizing runs into batches (e.g., starting at episode_1000).
+
+Example Usage:
+    # Set for headless rendering
+    export MUJOCO_GL=egl 
+    
+    # Run the generation script
+    python generate_vla_dataset.py \
+        --output_dir ./my_data \
+        --num_trials 500 \
+        --num_videos 10 \
+        --start_index 0
+"""
 
 import robosuite as suite
 import numpy as np
