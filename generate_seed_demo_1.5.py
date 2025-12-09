@@ -1,5 +1,4 @@
 """
-Author: Sherry Li
 
 Robosuite Seed Demonstration Generator (PickPlaceClutter)
 
