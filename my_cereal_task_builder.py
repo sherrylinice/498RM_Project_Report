@@ -1,7 +1,5 @@
 """
 
-Author: Sherry Li
-
 TensorFlow Datasets (TFDS) Builder for the custom VLA Cereal Task.
 
 This script defines a `tfds.core.GeneratorBasedBuilder` class named 
