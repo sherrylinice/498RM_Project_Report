@@ -1,6 +1,4 @@
 """
-Author: Sherry Li
-
 VLA Dataset Visualization Tool
 
 This script provides a command-line utility to visualize samples from a generated
