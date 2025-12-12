@@ -1,5 +1,4 @@
 """
-Author: Sherry Li
 
 VLA Dataset Generation Script for Robosuite
 
